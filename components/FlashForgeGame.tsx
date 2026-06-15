@@ -24,6 +24,11 @@ type FileData =
   | { type: "image"; base64: string; mediaType: string; note?: string }
   | { type: "pdf"; base64: string; mediaType?: string };
 type Card = { id: number; level: number; topic: string; question: string; answer: string; memoryTrick: string };
+type UsageInfo = {
+  inputTokens: number; outputTokens: number;
+  requestsRemaining: string | null; tokensRemaining: string | null;
+  tokensLimit: string | null; resetAt: string | null;
+};
 
 
 // ── Fallback deck ─────────────────────────────────────────────────────────────
@@ -145,7 +150,7 @@ async function extractNotesFromFile(file: File): Promise<FileData> {
 }
 
 // ── Claude API: generate cards from multimodal input ─────────────────────────
-async function generateCardsWithClaude(fileData: FileData | null, extraNotes: string) {
+async function generateCardsWithClaude(fileData: FileData | null, extraNotes: string): Promise<{ cards: Card[]; usage?: UsageInfo } | null> {
   try {
     const res = await fetch("/api/generate", {
       method: "POST",
@@ -153,10 +158,12 @@ async function generateCardsWithClaude(fileData: FileData | null, extraNotes: st
       body: JSON.stringify({ fileData, notes: extraNotes }),
     });
     if (!res.ok) return null;
-    const data = await res.json() as { cards?: Card[] };
-    const cards = data.cards;
-    if (!cards || !Array.isArray(cards)) return null;
-    return cards.map((c, i) => ({ ...c, id: 200 + i })) as Card[];
+    const data = await res.json() as { cards?: Card[]; usage?: UsageInfo };
+    if (!data.cards || !Array.isArray(data.cards)) return null;
+    return {
+      cards: data.cards.map((c, i) => ({ ...c, id: 200 + i })) as Card[],
+      usage: data.usage,
+    };
   } catch {
     return null;
   }
@@ -356,6 +363,7 @@ export default function FlashForgeGame() {
   const [newBadge, setNewBadge] = useState<{ id: string; icon: string; label: string; desc: string } | null>(null);
   const [reportData, setReportData] = useState<{ strong: Array<{ topic: string; acc: number }>; weak: Array<{ topic: string; acc: number }> } | null>(null);
   const [isFinalPhase, setIsFinalPhase] = useState(false);
+  const [apiUsage, setApiUsage] = useState<UsageInfo | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const timerRef = useRef<any>(null);
   const cardStartTime = useRef(Date.now());
@@ -420,12 +428,14 @@ export default function FlashForgeGame() {
   // ── Start game ────────────────────────────────────────────────────────────
   async function startGame() {
     setIsGenerating(true);
-    let cards = null;
+    let cards: Card[] | null = null;
     if (uploadedFile) {
       const fileData = await extractNotesFromFile(uploadedFile);
-      cards = await generateCardsWithClaude(fileData, notes);
+      const result = await generateCardsWithClaude(fileData, notes);
+      if (result) { cards = result.cards; if (result.usage) setApiUsage(result.usage); }
     } else if (notes.trim().length > 30) {
-      cards = await generateCardsWithClaude(null, notes);
+      const result = await generateCardsWithClaude(null, notes);
+      if (result) { cards = result.cards; if (result.usage) setApiUsage(result.usage); }
     }
     if (!cards || cards.length < 3) cards = generateFlashcards(notes);
     setDeck([...cards].sort((a,b)=>a.level-b.level));
@@ -681,6 +691,27 @@ export default function FlashForgeGame() {
                 {BADGES.map(b=><div key={b.id} title={`${b.label}: ${b.desc}`} style={{ fontSize:20, opacity:earnedBadges.has(b.id)?1:0.18, transition:"opacity .3s", cursor:"help" }}>{b.icon}</div>)}
               </div>
             </div>
+
+            {apiUsage && (
+              <div style={{ background:T.surface, border:`1px solid ${T.border}`, borderRadius:18, padding:18, marginTop:14 }}>
+                <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontWeight:700, fontSize:11, color:T.textSec, marginBottom:10, letterSpacing:"0.08em", textTransform:"uppercase" }}>API Usage</div>
+                {[
+                  { label:"Tokens in",  val: apiUsage.inputTokens.toLocaleString() },
+                  { label:"Tokens out", val: apiUsage.outputTokens.toLocaleString() },
+                  { label:"Remaining",  val: apiUsage.tokensRemaining ? `${Number(apiUsage.tokensRemaining).toLocaleString()} / ${Number(apiUsage.tokensLimit ?? 0).toLocaleString()}` : "—" },
+                ].map(r=>(
+                  <div key={r.label} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${T.border}` }}>
+                    <span style={{ color:T.textSec, fontSize:11 }}>{r.label}</span>
+                    <span style={{ color:T.violetLt, fontWeight:600, fontSize:11 }}>{r.val}</span>
+                  </div>
+                ))}
+                {apiUsage.resetAt && (
+                  <div style={{ marginTop:8, fontSize:10, color:T.textSec, textAlign:"center" }}>
+                    Resets {new Date(apiUsage.resetAt).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* ── Main area ── */}

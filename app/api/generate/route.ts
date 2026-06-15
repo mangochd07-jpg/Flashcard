@@ -45,13 +45,26 @@ Rules: level 1=recall, 2=understanding, 3=application, 4=exam-style. 3 cards eac
     return NextResponse.json({ error: "Upstream API error" }, { status: res.status });
   }
 
-  const data = await res.json() as { content?: Array<{ type: string; text: string }> };
+  const data = await res.json() as {
+    content?: Array<{ type: string; text: string }>;
+    usage?: { input_tokens: number; output_tokens: number };
+  };
+
+  const usage = {
+    inputTokens: data.usage?.input_tokens ?? 0,
+    outputTokens: data.usage?.output_tokens ?? 0,
+    requestsRemaining: res.headers.get("anthropic-ratelimit-requests-remaining"),
+    tokensRemaining: res.headers.get("anthropic-ratelimit-tokens-remaining"),
+    tokensLimit: res.headers.get("anthropic-ratelimit-tokens-limit"),
+    resetAt: res.headers.get("anthropic-ratelimit-tokens-reset"),
+  };
+
   const text = data.content?.find(b => b.type === "text")?.text || "[]";
   const clean = text.replace(/```json|```/g, "").trim();
 
   try {
     const cards = JSON.parse(clean);
-    return NextResponse.json({ cards });
+    return NextResponse.json({ cards, usage });
   } catch {
     return NextResponse.json({ error: "Failed to parse cards" }, { status: 500 });
   }
