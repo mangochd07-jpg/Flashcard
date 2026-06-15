@@ -267,26 +267,8 @@ function VoiceRecorder({ onTranscript, disabled }: { onTranscript: (text: string
         stream.getTracks().forEach(t=>t.stop());
         setState("processing");
         const blob = new Blob(chunksRef.current, { type:"audio/webm" });
-        // Convert to base64 and send to Claude (it will interpret the intent)
-        const reader = new FileReader();
-        reader.onload = async ev => {
-          const b64 = (ev.target!.result as string).split(",")[1];
-          try {
-            const res = await fetch("https://api.anthropic.com/v1/messages", {
-              method:"POST", headers:{"Content-Type":"application/json"},
-              body: JSON.stringify({
-                model:"claude-sonnet-4-20250514", max_tokens:200,
-                system:"The user recorded an audio answer to a flashcard question. The audio cannot be decoded here — just acknowledge with a placeholder transcription message.",
-                messages:[{role:"user",content:"Audio recorded. Please output exactly: [Voice answer recorded — please type your answer too for best results]"}],
-              }),
-            });
-            const data = await res.json() as { content?: Array<{ text: string }> };
-            const msg = data.content?.[0]?.text || "[Voice answer recorded]";
-            setTranscript(msg); onTranscript(msg);
-          } catch { setTranscript("[Voice answer recorded]"); onTranscript("[Voice answer recorded]"); }
-          setState("done");
-        };
-        reader.readAsDataURL(blob);
+        const placeholder = "[Voice answer recorded — please type your answer too for best results]";
+        setTranscript(placeholder); onTranscript(placeholder); setState("done");
       };
       mr.start();
       setState("recording");
