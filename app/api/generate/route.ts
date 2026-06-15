@@ -1,71 +1,73 @@
 import { NextRequest, NextResponse } from "next/server";
 
+type GeminiPart =
+  | { text: string }
+  | { inline_data: { mime_type: string; data: string } };
+
 export async function POST(req: NextRequest) {
   const { fileData, notes } = await req.json();
 
-  const userContent: unknown[] = [];
+  const parts: GeminiPart[] = [];
 
   if (fileData) {
     if (fileData.type === "text") {
-      userContent.push({ type: "text", text: fileData.content });
+      parts.push({ text: fileData.content });
     } else if (fileData.type === "image") {
-      userContent.push({ type: "image", source: { type: "base64", media_type: fileData.mediaType, data: fileData.base64 } });
-      if (fileData.note) userContent.push({ type: "text", text: fileData.note });
+      parts.push({ inline_data: { mime_type: fileData.mediaType, data: fileData.base64 } });
+      if (fileData.note) parts.push({ text: fileData.note });
     } else if (fileData.type === "pdf") {
-      userContent.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: fileData.base64 } });
+      parts.push({ inline_data: { mime_type: "application/pdf", data: fileData.base64 } });
     }
   }
 
-  if (notes) userContent.push({ type: "text", text: notes });
+  if (notes) parts.push({ text: notes });
 
-  userContent.push({
-    type: "text",
+  parts.push({
     text: `Based on ALL the above content, generate exactly 12 flashcard questions covering key concepts.
 Return ONLY a JSON array, no markdown, no preamble:
 [{"id":1,"level":1,"topic":"Subject","question":"...","answer":"...","memoryTrick":"..."},...]
 Rules: level 1=recall, 2=understanding, 3=application, 4=exam-style. 3 cards each level.`,
   });
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY!,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 3000,
-      system: "You are a study material expert. Extract key concepts and generate high-quality flashcards. Always respond with pure JSON array only.",
-      messages: [{ role: "user", content: userContent }],
-    }),
-  });
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: "You are a study material expert. Extract key concepts and generate high-quality flashcards. Always respond with pure JSON array only." }] },
+        contents: [{ parts }],
+        generationConfig: { maxOutputTokens: 3000, temperature: 0.7 },
+      }),
+    }
+  );
 
   if (!res.ok) {
-    return NextResponse.json({ error: "Upstream API error" }, { status: res.status });
+    const err = await res.json().catch(() => ({}));
+    return NextResponse.json({ error: "Upstream API error", detail: err }, { status: res.status });
   }
 
   const data = await res.json() as {
-    content?: Array<{ type: string; text: string }>;
-    usage?: { input_tokens: number; output_tokens: number };
+    candidates?: Array<{ content: { parts: Array<{ text: string }> } }>;
+    usageMetadata?: { promptTokenCount: number; candidatesTokenCount: number; totalTokenCount: number };
   };
 
   const usage = {
-    inputTokens: data.usage?.input_tokens ?? 0,
-    outputTokens: data.usage?.output_tokens ?? 0,
-    requestsRemaining: res.headers.get("anthropic-ratelimit-requests-remaining"),
-    tokensRemaining: res.headers.get("anthropic-ratelimit-tokens-remaining"),
-    tokensLimit: res.headers.get("anthropic-ratelimit-tokens-limit"),
-    resetAt: res.headers.get("anthropic-ratelimit-tokens-reset"),
+    inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
+    outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+    requestsRemaining: null,
+    tokensRemaining: null,
+    tokensLimit: null,
+    resetAt: null,
   };
 
-  const text = data.content?.find(b => b.type === "text")?.text || "[]";
-  const clean = text.replace(/```json|```/g, "").trim();
+  const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+  const clean = raw.replace(/```json|```/g, "").trim();
 
   try {
     const cards = JSON.parse(clean);
     return NextResponse.json({ cards, usage });
   } catch {
-    return NextResponse.json({ error: "Failed to parse cards" }, { status: 500 });
+    return NextResponse.json({ error: "Failed to parse cards", raw }, { status: 500 });
   }
 }
