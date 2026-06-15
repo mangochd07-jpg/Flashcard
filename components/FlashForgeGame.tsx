@@ -149,23 +149,25 @@ async function extractNotesFromFile(file: File): Promise<FileData> {
   return { type:"text", content: `[File: ${file.name}] Generate relevant study flashcards based on the topic this filename suggests.` };
 }
 
-// ── Claude API: generate cards from multimodal input ─────────────────────────
-async function generateCardsWithClaude(fileData: FileData | null, extraNotes: string): Promise<{ cards: Card[]; usage?: UsageInfo } | null> {
+// ── Generate cards via server route ──────────────────────────────────────────
+async function generateCardsWithClaude(fileData: FileData | null, extraNotes: string): Promise<{ cards: Card[]; usage?: UsageInfo; error?: string } | null> {
   try {
     const res = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ fileData, notes: extraNotes }),
     });
-    if (!res.ok) return null;
-    const data = await res.json() as { cards?: Card[]; usage?: UsageInfo };
-    if (!data.cards || !Array.isArray(data.cards)) return null;
+    const data = await res.json() as { cards?: Card[]; usage?: UsageInfo; error?: string; detail?: unknown };
+    if (!res.ok || data.error) {
+      return { cards: [], error: data.error ?? `API error ${res.status}` };
+    }
+    if (!data.cards || !Array.isArray(data.cards)) return { cards: [], error: "No cards returned from AI." };
     return {
       cards: data.cards.map((c, i) => ({ ...c, id: 200 + i })) as Card[],
       usage: data.usage,
     };
-  } catch {
-    return null;
+  } catch (e) {
+    return { cards: [], error: String(e) };
   }
 }
 
@@ -416,21 +418,15 @@ export default function FlashForgeGame() {
       return;
     }
     setIsGenerating(true);
-    let cards: Card[] | null = null;
-    if (uploadedFile) {
-      const fileData = await extractNotesFromFile(uploadedFile);
-      const result = await generateCardsWithClaude(fileData, notes);
-      if (result) { cards = result.cards; if (result.usage) setApiUsage(result.usage); }
-    } else {
-      const result = await generateCardsWithClaude(null, notes);
-      if (result) { cards = result.cards; if (result.usage) setApiUsage(result.usage); }
-    }
+    const fileData = uploadedFile ? await extractNotesFromFile(uploadedFile) : null;
+    const result = await generateCardsWithClaude(fileData, notes);
     setIsGenerating(false);
-    if (!cards || cards.length < 3) {
-      setGenerateError("Couldn't generate cards from your content. Check your GEMINI_API_KEY is set in Vercel, then try again.");
+    if (!result || result.cards.length < 3) {
+      setGenerateError(`Couldn't generate cards. ${result?.error ?? "Check your GEMINI_API_KEY is set in Vercel."}`);
       return;
     }
-    setDeck([...cards].sort((a,b)=>a.level-b.level));
+    if (result.usage) setApiUsage(result.usage);
+    setDeck([...result.cards].sort((a,b)=>a.level-b.level));
     setQueueIdx(0); setPhase("game");
   }
 

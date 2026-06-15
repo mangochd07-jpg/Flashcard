@@ -43,8 +43,9 @@ Rules: level 1=recall, 2=understanding, 3=application, 4=exam-style. 3 cards eac
   );
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    return NextResponse.json({ error: "Upstream API error", detail: err }, { status: res.status });
+    const err = await res.json().catch(() => ({})) as { error?: { message?: string; status?: string } };
+    const msg = err?.error?.message ?? err?.error?.status ?? `Gemini returned HTTP ${res.status}`;
+    return NextResponse.json({ error: msg }, { status: res.status });
   }
 
   const data = await res.json() as {
