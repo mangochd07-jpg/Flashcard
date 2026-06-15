@@ -146,40 +146,16 @@ async function extractNotesFromFile(file: File): Promise<FileData> {
 
 // ── Claude API: generate cards from multimodal input ─────────────────────────
 async function generateCardsWithClaude(fileData: FileData | null, extraNotes: string) {
-  const userContent = [];
-
-  if (fileData) {
-    if (fileData.type === "text") {
-      userContent.push({ type:"text", text: fileData.content });
-    } else if (fileData.type === "image") {
-      userContent.push({ type:"image", source:{ type:"base64", media_type: fileData.mediaType, data: fileData.base64 }});
-      if (fileData.note) userContent.push({ type:"text", text: fileData.note });
-    } else if (fileData.type === "pdf") {
-      userContent.push({ type:"document", source:{ type:"base64", media_type:"application/pdf", data: fileData.base64 }});
-    }
-  }
-
-  if (extraNotes) userContent.push({ type:"text", text: extraNotes });
-
-  userContent.push({ type:"text", text:`Based on ALL the above content, generate exactly 12 flashcard questions covering key concepts.
-Return ONLY a JSON array, no markdown, no preamble:
-[{"id":1,"level":1,"topic":"Subject","question":"...","answer":"...","memoryTrick":"..."},...]
-Rules: level 1=recall, 2=understanding, 3=application, 4=exam-style. 3 cards each level.` });
-
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({
-        model:"claude-sonnet-4-20250514", max_tokens:3000,
-        system:"You are a study material expert. Extract key concepts and generate high-quality flashcards. Always respond with pure JSON array only.",
-        messages:[{ role:"user", content: userContent }],
-      }),
+    const res = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileData, notes: extraNotes }),
     });
-    const data = await res.json() as { content?: Array<{ type: string; text: string }> };
-    const text = data.content?.find(b => b.type === "text")?.text || "[]";
-    const clean = text.replace(/```json|```/g,"").trim();
-    const cards = JSON.parse(clean) as Card[];
+    if (!res.ok) return null;
+    const data = await res.json() as { cards?: Card[] };
+    const cards = data.cards;
+    if (!cards || !Array.isArray(cards)) return null;
     return cards.map((c, i) => ({ ...c, id: 200 + i })) as Card[];
   } catch {
     return null;
@@ -189,18 +165,13 @@ Rules: level 1=recall, 2=understanding, 3=application, 4=exam-style. 3 cards eac
 // ── Claude API: evaluate answer ───────────────────────────────────────────────
 async function evalAnswer(question: string, correctAnswer: string, userAnswer: string) {
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({
-        model:"claude-sonnet-4-20250514", max_tokens:500,
-        system:`You are a strict but encouraging tutor. Respond ONLY with JSON, no markdown:
-{"verdict":"correct"|"partial"|"incorrect","score":0-100,"feedback":"1-2 sentences","encouragement":"short motivational line"}`,
-        messages:[{role:"user",content:`Question: ${question}\nCorrect Answer: ${correctAnswer}\nStudent's Answer: ${userAnswer}`}],
-      }),
+    const res = await fetch("/api/evaluate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, correctAnswer, userAnswer }),
     });
-    const data = await res.json() as { content?: Array<{ type: string; text: string }> };
-    const text = data.content?.find(b => b.type === "text")?.text || "{}";
-    return JSON.parse(text.replace(/```json|```/g,"").trim());
+    if (!res.ok) throw new Error("eval failed");
+    return await res.json();
   } catch {
     const ua = userAnswer.toLowerCase();
     const hits = correctAnswer.toLowerCase().split(/\s+/).filter(w=>w.length>4&&ua.includes(w)).length;
