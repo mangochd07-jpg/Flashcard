@@ -10,7 +10,21 @@ const T = {
 };
 
 // ── Timer presets per difficulty level ───────────────────────────────────────
-const TIMER_SECONDS = { 1: 30, 2: 45, 3: 60, 4: 90 };
+const TIMER_SECONDS: Record<number, number> = { 1: 30, 2: 45, 3: 60, 4: 90 };
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+type TopicStats = { correct: number; total: number };
+type Stats = {
+  xp: number; streak: number; totalCorrect: number; totalAnswered: number;
+  clearedL2: boolean; comebacked: number; speedBonus: number; voiceAnswers: number;
+  byTopic: Record<string, TopicStats>; difficultIds: Set<number>;
+};
+type FileData =
+  | { type: "text"; content: string }
+  | { type: "image"; base64: string; mediaType: string; note?: string }
+  | { type: "pdf"; base64: string; mediaType?: string };
+type Card = { id: number; level: number; topic: string; question: string; answer: string; memoryTrick: string };
+
 
 // ── Fallback deck ─────────────────────────────────────────────────────────────
 const FALLBACK_CARDS = [
@@ -31,7 +45,7 @@ const FALLBACK_CARDS = [
   { id:15, level:4, topic:"Chemistry",     question:"Using Le Chatelier's Principle, what happens to N₂+3H₂⇌2NH₃ (ΔH=−92kJ) when temperature rises?", answer:"Equilibrium shifts LEFT — endothermic reverse reaction is favoured, decreasing NH₃ yield.", memoryTrick:"Exothermic forward → heat is a product → extra heat shifts LEFT." },
 ];
 
-function generateFlashcards(notes) {
+function generateFlashcards(notes: string) {
   if (!notes || notes.trim().length < 30) return [...FALLBACK_CARDS];
   const lines = notes.split(/\n|\./).map(s => s.trim()).filter(s => s.length > 15);
   const parsed = lines.slice(0, 8).map((line, i) => ({
@@ -44,11 +58,11 @@ function generateFlashcards(notes) {
 
 const XP_PER_CORRECT = 20, XP_PER_LEVEL = 100;
 const SPEED_BONUS_THRESHOLD = 0.5; // answered in top 50% of time → bonus XP
-function xpLevel(xp) {
+function xpLevel(xp: number) {
   return { lvl: Math.floor(xp / XP_PER_LEVEL) + 1, pct: ((xp % XP_PER_LEVEL) / XP_PER_LEVEL) * 100 };
 }
 
-const BADGES = [
+const BADGES: Array<{ id: string; icon: string; label: string; desc: string; cond: (s: Stats) => boolean }> = [
   { id:"first_blood",   icon:"🩸", label:"First Blood",    desc:"First correct answer",          cond:s=>s.totalCorrect>=1 },
   { id:"hot_streak",    icon:"🔥", label:"Hot Streak",      desc:"5 correct in a row",            cond:s=>s.streak>=5 },
   { id:"concept_king",  icon:"👑", label:"Concept King",    desc:"Cleared a Level 2 card",        cond:s=>s.clearedL2 },
@@ -60,17 +74,17 @@ const BADGES = [
 ];
 
 // ── File → base64 helper ──────────────────────────────────────────────────────
-function fileToBase64(file) {
+function fileToBase64(file: File): Promise<string> {
   return new Promise((res, rej) => {
     const r = new FileReader();
-    r.onload = e => res(e.target.result.split(",")[1]);
+    r.onload = e => res((e.target!.result as string).split(",")[1]);
     r.onerror = () => rej(new Error("read failed"));
     r.readAsDataURL(file);
   });
 }
 
 // ── Determine media type for Claude API ──────────────────────────────────────
-function claudeMediaType(file) {
+function claudeMediaType(file: File) {
   const t = file.type;
   if (t.startsWith("image/")) return t;
   if (t === "application/pdf") return "application/pdf";
@@ -78,7 +92,7 @@ function claudeMediaType(file) {
 }
 
 // ── Extract text/frames from uploaded file for Claude ────────────────────────
-async function extractNotesFromFile(file) {
+async function extractNotesFromFile(file: File): Promise<FileData> {
   const mt = claudeMediaType(file);
   const isText = file.type.startsWith("text/") || /\.(txt|md|csv)$/i.test(file.name);
   const isVideo = file.type.startsWith("video/");
@@ -88,7 +102,7 @@ async function extractNotesFromFile(file) {
   if (isText) {
     return new Promise(res => {
       const r = new FileReader();
-      r.onload = e => res({ type:"text", content: e.target.result });
+      r.onload = e => res({ type:"text", content: e.target!.result as string });
       r.readAsText(file);
     });
   }
@@ -105,7 +119,7 @@ async function extractNotesFromFile(file) {
           const canvas = document.createElement("canvas");
           canvas.width = Math.min(video.videoWidth, 800);
           canvas.height = Math.round(canvas.width * (video.videoHeight / video.videoWidth));
-          canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+          canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height);
           const b64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
           URL.revokeObjectURL(url);
           res({ type:"image", base64: b64, mediaType:"image/jpeg", note:`Screenshot from video: ${file.name}` });
@@ -131,7 +145,7 @@ async function extractNotesFromFile(file) {
 }
 
 // ── Claude API: generate cards from multimodal input ─────────────────────────
-async function generateCardsWithClaude(fileData, extraNotes) {
+async function generateCardsWithClaude(fileData: FileData | null, extraNotes: string) {
   const userContent = [];
 
   if (fileData) {
@@ -162,18 +176,18 @@ Rules: level 1=recall, 2=understanding, 3=application, 4=exam-style. 3 cards eac
         messages:[{ role:"user", content: userContent }],
       }),
     });
-    const data = await res.json();
-    const text = data.content?.find(b=>b.type==="text")?.text || "[]";
+    const data = await res.json() as { content?: Array<{ type: string; text: string }> };
+    const text = data.content?.find(b => b.type === "text")?.text || "[]";
     const clean = text.replace(/```json|```/g,"").trim();
-    const cards = JSON.parse(clean);
-    return cards.map((c,i)=>({ ...c, id: 200+i }));
+    const cards = JSON.parse(clean) as Card[];
+    return cards.map((c, i) => ({ ...c, id: 200 + i })) as Card[];
   } catch {
     return null;
   }
 }
 
 // ── Claude API: evaluate answer ───────────────────────────────────────────────
-async function evalAnswer(question, correctAnswer, userAnswer) {
+async function evalAnswer(question: string, correctAnswer: string, userAnswer: string) {
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method:"POST", headers:{"Content-Type":"application/json"},
@@ -184,8 +198,8 @@ async function evalAnswer(question, correctAnswer, userAnswer) {
         messages:[{role:"user",content:`Question: ${question}\nCorrect Answer: ${correctAnswer}\nStudent's Answer: ${userAnswer}`}],
       }),
     });
-    const data = await res.json();
-    const text = data.content?.find(b=>b.type==="text")?.text || "{}";
+    const data = await res.json() as { content?: Array<{ type: string; text: string }> };
+    const text = data.content?.find(b => b.type === "text")?.text || "{}";
     return JSON.parse(text.replace(/```json|```/g,"").trim());
   } catch {
     const ua = userAnswer.toLowerCase();
@@ -196,7 +210,7 @@ async function evalAnswer(question, correctAnswer, userAnswer) {
 }
 
 // ── Circular countdown timer component ───────────────────────────────────────
-function CountdownRing({ seconds, total, paused }) {
+function CountdownRing({ seconds, total, paused }: { seconds: number; total: number; paused: boolean }) {
   const R = 28, C = 2 * Math.PI * R;
   const fraction = seconds / total;
   const dash = fraction * C;
@@ -225,24 +239,29 @@ function CountdownRing({ seconds, total, paused }) {
 }
 
 // ── Voice recorder component ──────────────────────────────────────────────────
-function VoiceRecorder({ onTranscript, disabled }) {
+function VoiceRecorder({ onTranscript, disabled }: { onTranscript: (text: string) => void; disabled: boolean }) {
   const [state, setState] = useState("idle"); // idle | recording | processing | done
   const [transcript, setTranscript] = useState("");
   const [error, setError] = useState("");
-  const mediaRef = useRef(null);
-  const chunksRef = useRef([]);
-  const recognitionRef = useRef(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mediaRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const chunksRef = useRef<any[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
 
   const startRecording = async () => {
     setError(""); setTranscript("");
     // Try Web Speech API first (best for real-time)
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      const rec = new SpeechRecognition();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SR) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rec: any = new SR();
       rec.continuous = false; rec.interimResults = true; rec.lang = "en-US";
       recognitionRef.current = rec;
       let finalText = "";
-      rec.onresult = e => {
+      rec.onresult = (e: any) => {
         let interim = "";
         for (let i = e.resultIndex; i < e.results.length; i++) {
           if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
@@ -250,7 +269,7 @@ function VoiceRecorder({ onTranscript, disabled }) {
         }
         setTranscript(finalText + interim);
       };
-      rec.onerror = e => { setError("Mic error: " + e.error); setState("idle"); };
+      rec.onerror = (e: any) => { setError("Mic error: " + e.error); setState("idle"); };
       rec.onend = () => {
         setState("done");
         if (finalText.trim()) { onTranscript(finalText.trim()); }
@@ -273,7 +292,7 @@ function VoiceRecorder({ onTranscript, disabled }) {
         // Convert to base64 and send to Claude (it will interpret the intent)
         const reader = new FileReader();
         reader.onload = async ev => {
-          const b64 = ev.target.result.split(",")[1];
+          const b64 = (ev.target!.result as string).split(",")[1];
           try {
             const res = await fetch("https://api.anthropic.com/v1/messages", {
               method:"POST", headers:{"Content-Type":"application/json"},
@@ -283,7 +302,7 @@ function VoiceRecorder({ onTranscript, disabled }) {
                 messages:[{role:"user",content:"Audio recorded. Please output exactly: [Voice answer recorded — please type your answer too for best results]"}],
               }),
             });
-            const data = await res.json();
+            const data = await res.json() as { content?: Array<{ text: string }> };
             const msg = data.content?.[0]?.text || "[Voice answer recorded]";
             setTranscript(msg); onTranscript(msg);
           } catch { setTranscript("[Voice answer recorded]"); onTranscript("[Voice answer recorded]"); }
@@ -342,33 +361,34 @@ function VoiceRecorder({ onTranscript, disabled }) {
 export default function FlashForgeGame() {
   const [phase, setPhase] = useState("upload");
   const [notes, setNotes] = useState("");
-  const [uploadedFile, setUploadedFile] = useState(null);
-  const [filePreview, setFilePreview] = useState(null); // {type, url, name}
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [filePreview, setFilePreview] = useState<{ type: string; url: string | undefined; name: string } | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [deck, setDeck] = useState([]);
+  const [deck, setDeck] = useState<Card[]>([]);
   const [queueIdx, setQueueIdx] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [inputMode, setInputMode] = useState("text"); // text | voice
   const [userAnswer, setUserAnswer] = useState("");
-  const [evaluation, setEvaluation] = useState(null);
+  const [evaluation, setEvaluation] = useState<{ verdict: string; feedback: string; encouragement: string; score?: number } | null>(null);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [timerOn, setTimerOn] = useState(true);
   const [timeLeft, setTimeLeft] = useState(30);
   const [timerTotal, setTimerTotal] = useState(30);
   const [timerPaused, setTimerPaused] = useState(false);
   const [timedOut, setTimedOut] = useState(false);
-  const [stats, setStats] = useState({
+  const [stats, setStats] = useState<Stats>({
     xp:0, streak:0, totalCorrect:0, totalAnswered:0,
     clearedL2:false, comebacked:0, speedBonus:0, voiceAnswers:0,
-    byTopic:{}, difficultIds:new Set(),
+    byTopic:{}, difficultIds:new Set<number>(),
   });
-  const [earnedBadges, setEarnedBadges] = useState(new Set());
-  const [newBadge, setNewBadge] = useState(null);
-  const [reportData, setReportData] = useState(null);
+  const [earnedBadges, setEarnedBadges] = useState<Set<string>>(new Set());
+  const [newBadge, setNewBadge] = useState<{ id: string; icon: string; label: string; desc: string } | null>(null);
+  const [reportData, setReportData] = useState<{ strong: Array<{ topic: string; acc: number }>; weak: Array<{ topic: string; acc: number }> } | null>(null);
   const [isFinalPhase, setIsFinalPhase] = useState(false);
-  const timerRef = useRef(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const timerRef = useRef<any>(null);
   const cardStartTime = useRef(Date.now());
-  const fileRef = useRef(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   const currentCard = deck[queueIdx] ?? null;
 
@@ -395,7 +415,7 @@ export default function FlashForgeGame() {
   }, [currentCard, flipped, timerOn, timerPaused, phase]);
 
   // ── Badge check ───────────────────────────────────────────────────────────
-  const checkBadges = useCallback((ns) => {
+  const checkBadges = useCallback((ns: Stats) => {
     BADGES.forEach(b => {
       if (!earnedBadges.has(b.id) && b.cond(ns)) {
         setEarnedBadges(p => new Set([...p, b.id]));
@@ -405,24 +425,24 @@ export default function FlashForgeGame() {
   }, [earnedBadges]);
 
   // ── File handling ─────────────────────────────────────────────────────────
-  function handleFile(e) {
+  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]; if (!f) return;
     setUploadedFile(f);
     const isImg = f.type.startsWith("image/");
     const isVid = f.type.startsWith("video/");
     const isAud = f.type.startsWith("audio/");
-    const url = (isImg || isVid || isAud) ? URL.createObjectURL(f) : null;
+    const url = (isImg || isVid || isAud) ? URL.createObjectURL(f) : undefined;
     setFilePreview({ type: isImg?"image":isVid?"video":isAud?"audio":"doc", url, name:f.name });
   }
 
-  function handleDrop(e) {
+  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
     const f = e.dataTransfer.files?.[0]; if (!f) return;
     setUploadedFile(f);
     const isImg = f.type.startsWith("image/");
     const isVid = f.type.startsWith("video/");
     const isAud = f.type.startsWith("audio/");
-    const url = (isImg || isVid || isAud) ? URL.createObjectURL(f) : null;
+    const url = (isImg || isVid || isAud) ? URL.createObjectURL(f) : undefined;
     setFilePreview({ type: isImg?"image":isVid?"video":isAud?"audio":"doc", url, name:f.name });
   }
 
@@ -442,7 +462,7 @@ export default function FlashForgeGame() {
   }
 
   // ── Submit answer ─────────────────────────────────────────────────────────
-  async function submitAnswer(answerOverride) {
+  async function submitAnswer(answerOverride?: string) {
     const ans = answerOverride ?? userAnswer;
     if (!ans.trim() || isEvaluating || !currentCard || flipped) return;
     clearInterval(timerRef.current);
@@ -789,7 +809,7 @@ export default function FlashForgeGame() {
             )}
 
             {/* ── Timeout message ── */}
-            {timedOut && !evaluation?.verdict !== "timeout" && (
+            {timedOut && evaluation?.verdict === "timeout" && (
               <div style={{ background:"rgba(244,63,94,.1)", border:`1px solid ${T.rose}`, borderRadius:12, padding:"12px 16px", marginBottom:12, color:T.rose, fontWeight:600 }}>
                 ⏰ Time&apos;s up! The answer has been revealed.
               </div>
