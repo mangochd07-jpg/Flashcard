@@ -324,6 +324,7 @@ export default function FlashForgeGame() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState<{ type: string; url: string | undefined; name: string } | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
   const [deck, setDeck] = useState<Card[]>([]);
   const [queueIdx, setQueueIdx] = useState(0);
   const [flipped, setFlipped] = useState(false);
@@ -409,19 +410,28 @@ export default function FlashForgeGame() {
 
   // ── Start game ────────────────────────────────────────────────────────────
   async function startGame() {
+    setGenerateError(null);
+    if (!uploadedFile && notes.trim().length < 30) {
+      setGenerateError("Please upload a file or paste at least 30 characters of notes before generating.");
+      return;
+    }
     setIsGenerating(true);
     let cards: Card[] | null = null;
     if (uploadedFile) {
       const fileData = await extractNotesFromFile(uploadedFile);
       const result = await generateCardsWithClaude(fileData, notes);
       if (result) { cards = result.cards; if (result.usage) setApiUsage(result.usage); }
-    } else if (notes.trim().length > 30) {
+    } else {
       const result = await generateCardsWithClaude(null, notes);
       if (result) { cards = result.cards; if (result.usage) setApiUsage(result.usage); }
     }
-    if (!cards || cards.length < 3) cards = generateFlashcards(notes);
+    setIsGenerating(false);
+    if (!cards || cards.length < 3) {
+      setGenerateError("Couldn't generate cards from your content. Check your GEMINI_API_KEY is set in Vercel, then try again.");
+      return;
+    }
     setDeck([...cards].sort((a,b)=>a.level-b.level));
-    setQueueIdx(0); setIsGenerating(false); setPhase("game");
+    setQueueIdx(0); setPhase("game");
   }
 
   // ── Submit answer ─────────────────────────────────────────────────────────
@@ -628,11 +638,16 @@ export default function FlashForgeGame() {
             </div>
           </div>
 
+          {generateError && (
+            <div style={{ background:"rgba(244,63,94,.1)", border:`1px solid ${T.rose}`, borderRadius:12, padding:"12px 16px", marginBottom:12, color:T.rose, fontSize:13, fontWeight:500 }}>
+              {generateError}
+            </div>
+          )}
           <button className="btn-primary" style={{ width:"100%", fontSize:16, padding:16 }} onClick={startGame} disabled={isGenerating}>
-            {isGenerating ? "🧠 Generating flashcards…" : "Generate Flashcards →"}
+            {isGenerating ? "🧠 Generating flashcards from your content…" : "Generate Flashcards →"}
           </button>
           <p style={{ textAlign:"center", color:T.textSec, fontSize:12, marginTop:10 }}>
-            AI reads your file and creates cards automatically · works offline with demo Biology deck
+            Upload a file or paste notes — AI generates cards from your content only
           </p>
         </div>
       )}
